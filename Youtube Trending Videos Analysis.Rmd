@@ -1,0 +1,601 @@
+---
+title: 'Data Visualization on Youtube Trending Videos'
+author: "Faisal Amir Maz"
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output:
+  html_document:
+    theme: cosmo
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: false
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# clear-up the environment
+rm(list = ls())
+
+# chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  comment = "#>"
+)
+
+options(scipen = 9999)
+```
+
+# The Workflow
+
+1. Start with Business Question
+2. Preparing the data
+3. Visualizing the data
+
+## Study Case: "US Trending Videos"
+We want to analyze what kind of video that goes viral. This will help us to decide what kind of videos that people love to watch.
+
+## Read Data
+
+```{r}
+# read
+vids <- read.csv("data_input/USvideos.csv")
+```
+
+```{r}
+# inspect
+head(vids)
+```
+
+YouTube's US Trending Videos is a compilation of 200 videos per day from 2017-11-14 until 2018-01-21. Below is the column descriptions:
+
+* **trending_date**: trending date
+* **title**: video title
+* **channel_title**: channel name
+* **category_id**: video category
+* **publish_time**: publish time
+* **views**:  views count
+* **likes**:  likes count
+* **dislikes**:  dislikes count
+* **comment_count**: comment count
+* **comment_disabled**: status whether comment disabled or not
+* **rating_disabled**: status wheter video rating disabled or not
+* **video_error_or_removed**: status whether video is deleted or not
+
+
+Unused column:
+
+1. comments_disabled
+2. ratings_disabled
+3. video_error_or_removed
+
+Columnt with incorect data type:
+
+1. trending date -> date
+2. publish time -> date-time (POXIXct)
+3. category id -> factor (dan diubah ke label kategori aslinya)
+
+## Data Wrangling
+
+1. Delete unused columns
+
+```{r}
+vids <- vids[,-c(10:12)]
+
+head(vids)
+```
+
+2. Change data type on `category_id`
+
+We'll use `switch()` & `sapply()`:
+
+```{r}
+# ubah isi kolom
+vids$category_id <- sapply(as.character(vids$category_id), switch, 
+                           "1" = "Film and Animation",
+                           "2" = "Autos and Vehicles", 
+                           "10" = "Music", 
+                           "15" = "Pets and Animals", 
+                           "17" = "Sports",
+                           "19" = "Travel and Events", 
+                           "20" = "Gaming", 
+                           "22" = "People and Blogs", 
+                           "23" = "Comedy",
+                           "24" = "Entertainment", 
+                           "25" = "News and Politics",
+                           "26" = "Howto and Style", 
+                           "27" = "Education",
+                           "28" = "Science and Technology", 
+                           "29" = "Nonprofit and Activism",
+                           "43" = "Shows")
+
+# ubah ke tipe factor
+vids$category_id <- as.factor(vids$category_id)
+```
+
+```{r}
+# cek data
+head(vids)
+```
+
+1. Turn `trending_date` column into *date* using lubridate package.
+2. Turn `publish_time` column into *date-time* with *timezone "America/New_York"* (`tz = "America/New_York"`)!
+
+```{r}
+
+library(lubridate)
+
+vids$trending_date <- ydm(vids$trending_date) 
+
+vids$publish_time <- ymd_hms(vids$publish_time, tz = "America/New_York")
+
+head(vids)
+```
+[Cheatsheet Lubridate](https://raw.githubusercontent.com/rstudio/cheatsheets/main/lubridate.pdf)
+
+### Feature Engineering
+
+In this part we're going to make a new column or information using the data. This is useful for data exploration, and modelling.
+
+
+1. Extract "publish_time" hour into s new column `publish_hour`
+
+```{r}
+vids$publish_hour <- hour(vids$publish_time)
+```
+
+2. Make a column named `publish_when` from publish hour into some range of time using `if else()`:
+
+we're going to make 3 perion of time:
+1. 12am to 8am
+2. 8am to 4pm
+3. 4pm to 12am
+
+```{r}
+pw <- function(x){
+   
+  if(x < 8){x <- "12am to 8am"} 
+  else if(x >= 8 & x < 16){x <- "8am to 4pm"}
+  else{x <- "4pm to 12am"}
+
+}
+```
+
+```{r}
+# use `sapply()` to apply the function into whole rows
+vids$publish_when <- sapply(vids$publish_hour, pw)
+
+# change to factor
+vids$publish_when <- as.factor(vids$publish_when)
+```
+
+
+3. Extract day data into `publish_wday` column.
+
+```{r}
+vids$publish_wday <- wday(vids$publish_time, 
+                          label = T, # menampilkan nama hari nya
+                          week_start = 1 # bisa atur urutan hari untuk awal minggu
+                          # locale = "Indonesian"
+                          )
+
+head(vids)
+```
+
+Table of locales:
+https://docs.moodle.org/dev/Table_of_locales
+
+4. calculate the likes per view, dislikes per view, and comment per view into more proportional statistic view.
+
+```{r}
+vids$likesp <- vids$likes/vids$views
+vids$dislikesp <- vids$dislikes/vids$views
+vids$commentp <- vids$comment_count/vids$views
+
+head(vids)
+```
+
+### Filter Unique Videos
+
+There are redundant in vids data because some trending videos appear mutiple times due to trending in more than a day. 
+
+```{r}
+length(vids$title)
+length(unique(vids$title))
+```
+
+We'll use `unique()` dan `match()` to solve this.
+
+* **unique**: select unique value of a vector
+* **match**: select the the first index that *match* between 2 vectors
+
+By combining this two techniques we can select the data when the videos are posted.
+
+Vids data is already ordered on date. Then we just need to find the first index that appear from data.
+
+```{r}
+# filter data unique
+index_vids <- match(unique(vids$title), vids$title)
+vids.u <- vids[index_vids,] # mensubset video unique yg pertama kali muncul
+```
+
+Cek data final:
+
+```{r}
+head(vids.u)
+```
+
+The data is now clean, means containing information that we need and not redundant. The next step is exploration and visualization.
+
+# Tipe Plot dan Fungsinya:
+
+* **Distribusi**: histogram, boxplot
+* **Korelasi**: scatterplot
+* **Ranking**: barplot
+* **Trend/Evolusi**: line plot
+
+Good Reference: [data-to-viz](https://www.data-to-viz.com/)
+
+# Exploratory Data Analysis
+
+```{r}
+# histogram 
+hist(vids.u$publish_hour,
+     breaks = 20) # untuk membuat bar lebih detail, dinaikan dari defaultnya 10
+```
+
+* x = data range
+* y = frequency
+
+**Insight**: many videos uploaded around 10 AM
+
+```{r}
+# boxplot
+boxplot(vids.u$publish_hour)
+```
+
+**Insight**: 
+
+* many videos uploaded at 10 AM
+* there is no outlier in the data
+
+let's find out what day are the trending videos uploaded the most
+```{r}
+plot(vids.u$publish_wday)
+```
+
+**Insight**: More videos uploaded in Tuesday-Friday than Saturday-Monday 
+
+Let's see some correlation between columns
+e.g. correlation between likes per view and comment per view
+
+```{r}
+plot(vids.u$likesp, vids.u$commentp)
+```
+
+```{r}
+cor(vids.u$likesp, vids.u$commentp)
+```
+
+**Insight**: There is weak-positive correlation between likesp and commentp. When the likesp has the high value commentp has the tendency of having high value also.
+
+
+## Baseplot Costumization
+
+The base plot can be customized but it has its own difficulties.
+
+e.g.: 
+
+**Business Question:** I'm interested in the "Autos and Vehicles", "Gaming", and "Travel and Events" themes. Of the three categories, is there a correlation between `likes/view` and `dislikes/view`? Are there certain characteristics for each category?
+
+**Data Preparation**:
+
+```{r}
+vids.agt <- vids.u[vids.u$category_id %in% c("Autos and Vehicles", 
+                                             "Gaming", "Travel and Events"),]
+
+head(vids.agt)
+```
+
+**note:** When we fetch rows with a certain category, we haven't eliminated any other categories. We can **remove categories (levels) that do not exist in the data** with the `droplevels()` function.
+
+```{r}
+# check levels
+levels(vids.agt$category_id)
+```
+
+```{r}
+vids.agt$category_id <- droplevels(vids.agt$category_id)
+```
+
+**Buat visualisasi**:
+
+```{r}
+plot(x = vids.agt$likesp, y = vids.agt$dislikesp)
+```
+
+We can enhance the visualization above so that the plot is more informative and interesting. The important point of good visualization is **informative plot**!
+
+```{r}
+plot(vids.agt$likesp, vids.agt$dislikesp, 
+     col = vids.agt$category_id, # warna 
+     pch = 19) # tipe point
+abline(lm(vids.agt$dislikesp ~ vids.agt$likesp), # regression line (linear model)
+       col=8, # warna
+       lwd=2, # line width
+       lty=2) # line type: dashed
+legend("right", # posisi
+       legend=levels(vids.agt$category_id), # isi legend berdasarkan category_id
+       fill=1:3) # warnanya ada 3, mengikuti category id
+```
+
+
+## The State of Trending Videos
+
+We are a YouTuber who wants to be careful about creating trending video content. We want to have videos with high likeability (**likes per view**), and high engagement (**comments per view**). From the `vids.agt` data, which category is the best for creating content?
+
+Steps:
+
+**Data Prep**
+
+```{r}
+head(vids.agt)
+```
+
+**Data viz**
+
+```{r}
+library(ggplot2)
+```
+
+```{r}
+# making canvas
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp))
+```
+
+Suppose we want to compare the distribution of likes per view for each category with **boxplot**:
+
+```{r}
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp)) + 
+  geom_boxplot()
+```
+
+Misalkan kita ingin memperlihatkan distribusi data yang sebenarnya menggunakan **scatterplot**:
+
+```{r}
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp)) + 
+  geom_boxplot() + 
+  geom_point()
+```
+
+The data distribution is visible but still overlapping. We can solve it with **geom jitter**. Where the data points will remain according to the value, but shifted randomly to the left/right:
+
+```{r}
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter()
+```
+
+We can add the commentp information as a geom_jitter size:
+
+```{r}
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  geom_jitter(aes(size = commentp))
+```
+
+**Insight:** of the three categories, the 'gamers' category has the video with the highest likes per view and comments per view which is also high, compared to the other two categories.
+
+Last step, we can give some colors to make it more interesting.
+
+
+```{r}
+# update plot terakhir
+ggplot(data = vids.agt, mapping = aes(x = category_id, y = likesp)) + 
+  geom_boxplot(outlier.shape = NA, fill = "black", col = "red") + 
+  geom_jitter(aes(size = commentp), col = "red", 
+              alpha = 0.6) # pengaturan opacity
+```
+
+## Top Channel in Trending Videos
+
+We are planning to collaborate with YouTube channels that appear frequently in trending video searches! Visualize the channels that have **trending videos >= 10** and sort them from highest. Which YouTube channel is good for collaborating with?
+
+**Data Prep:**
+
+```{r}
+# buat data frame
+vids.chan <- as.data.frame(table(vids.u$channel_title))
+vids.chan <- vids.chan[vids.chan$Freq >= 10,] # filter >= 10 video trending
+vids.chan <- vids.chan[order(vids.chan$Freq, decreasing = T),] # ordering berdasarkan Freq
+
+names(vids.chan) <- c("channel_name", "total_vid")
+
+head(vids.chan)
+```
+
+**Data viz**
+
+```{r}
+# base plot
+ggplot(vids.chan, aes(x = total_vid, y = channel_name)) +
+  geom_col()
+```
+
+Let's arrange the y-axis using total video and select only 10 channels.
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col()
+```
+
+- Set title and axis title 
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col() +
+  labs(title = "Top 10 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL)
+```
+
+- Let's add value label for every channel
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col() +
+  geom_label(mapping = aes(label = total_vid)) +
+  labs(title = "Top 10 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL)
+```
+
+- add *lines to the plot*, for example: the average total_vid line of all data
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col() +
+  geom_label(mapping = aes(label = total_vid)) +
+  labs(title = "Top 10 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL) +
+  geom_vline(aes(xintercept = mean(total_vid)), # titik x di rata2 total vid
+             data = vids.chan) # data yg digunakan berbeda dengan data awal
+```
+
+- rescale axis x (continuous)
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col() +
+  geom_label(mapping = aes(label = total_vid)) +
+  geom_vline(aes(xintercept = mean(total_vid)),
+             data = vids.chan) + 
+  labs(title = "Top 10 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL) +
+  scale_x_continuous(breaks = seq(0,35,5), # mengatur titik tickmarks nya
+                     limits = c(0,35)) # mengatur limit min-max
+  
+```
+
+- pengaturan warna
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col(aes(fill = total_vid)) + # atur fill berdasarkan total_vid
+  geom_label(mapping = aes(label = total_vid)) +
+  geom_vline(aes(xintercept = mean(total_vid)),
+             data = vids.chan) + 
+  labs(title = "Top 10 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL) +
+  scale_x_continuous(breaks = seq(0,35,5),
+                     limits = c(0,35)) +
+  scale_fill_gradient(low = "coral", high = "firebrick") # atur skala fill manual
+```
+
+
+```{r}
+ggplot(vids.chan[1:10,], aes(x = total_vid, y = reorder(channel_name, total_vid))) +
+  geom_col(aes(fill = total_vid), col = "#d63e2d", show.legend = F) +
+  geom_label(mapping = aes(label = total_vid),
+             data = vids.chan[1:5,]) +
+  labs(title = "Top 15 Channel in YouTube Trending",
+       subtitle = "Across All Categories",
+       caption = "Source: US YouTube Trending",
+       x = "Total Videos",
+       y = NULL) +
+  scale_x_continuous(breaks = seq(0,35,5),
+                     limits = c(0,35)) +
+  scale_fill_gradient(low = "ivory", high = "#d63e2d") +
+  scale_y_discrete(labels = scales::wrap_format(25)) +
+  geom_vline(aes(xintercept = mean(total_vid)), 
+             data = vids.chan) 
+```
+
+
+**Business Question:**
+We want to visualize the number of videos (`title`) published for each category (`category_id`) and at a certain time (`publish_when`).
+
+**Steps:**
+
+1.  **Data prep**
+
+```{r}
+# aggregasi data
+vids.agg <- aggregate(title ~ category_id + publish_when, 
+                      data = vids, 
+                      FUN = length) # jml baris
+
+# perbaiki nama kolom
+names(vids.agg) <- c("category_id","publish_when","vid_count")
+
+head(vids.agg)
+```
+
+2.  **Data viz**
+
+```{r}
+ggplot(vids.agg, aes(x = vid_count, y = reorder(category_id, vid_count))) +
+  geom_col(aes(fill = publish_when), position = "dodge") +
+  scale_fill_brewer(palette = "Set2")
+```
+
+**Insight**:
+
+- videos that are published a lot at 8am-4pm and 4pm-12am are entertainment
+- the videos that are published a lot at 12am-8am are music
+
+**Business Question:** 
+We want to visualize the proportion of videos published at a certain time (`publish_when`) for each category (`category_id`).
+
+```{r}
+# position fill
+ggplot(vids.agg, aes(x = vid_count, y = reorder(category_id, vid_count))) +
+  geom_col(mapping = aes(fill = publish_when), position = "fill") +
+  labs(x = "Video Count Proportion",
+       y = "",
+       fill = "",
+       title = "Proportion of YouTube Trending Videos",
+       subtitle = "Categories vs. Publish Hour") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+**Insight**:
+
+- In general, many videos are published at 8am-4pm
+- The Shows category only has videos published between 4pm-12am
+
+**Business Question:** 
+What category has the most trending videos? At what time are most of the trending videos from this category published?
+
+```{r}
+# position stack
+ggplot(vids.agg, aes(x = vid_count, y = reorder(category_id, vid_count))) +
+  geom_col(mapping = aes(fill = publish_when), position = "stack") +
+  labs(x = "Video Count",
+       y = "",
+       fill = "",
+       title = "Proportion of YouTube Trending Videos",
+       subtitle = "Categories vs. Publish Hour") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+**Insight**: 
+The category whose videos are included in the most trending video rows is Entertainment, with video publishing hours from 8 am to 4 pm.
